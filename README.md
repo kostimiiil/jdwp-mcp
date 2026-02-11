@@ -85,6 +85,7 @@ Adjust the path to match where you cloned this repository. The `--scope project`
 | `debug.list_watches` | List all watch expressions |
 | `debug.list_threads` | List all threads |
 | `debug.pause` | Pause execution |
+| `debug.set_value` | Modify a local variable in the current frame |
 | `debug.get_last_event` | Get last event (breakpoint, step, exception) |
 | `debug.disconnect` | End debug session |
 
@@ -128,19 +129,38 @@ jdwp-mcp/
 │   ├── protocol.rs     # Packet encoding/decoding
 │   ├── commands.rs     # JDWP command constants
 │   ├── types.rs        # JDWP type definitions
-│   └── events.rs       # Event handling
+│   ├── events.rs       # Event handling
+│   ├── eventrequest.rs # Breakpoint/step/exception requests
+│   ├── stackframe.rs   # Frame value get/set
+│   ├── object.rs       # Object field access + method invocation
+│   ├── string.rs       # String value retrieval
+│   ├── array.rs        # Array length + element access
+│   ├── vm.rs           # VM-level commands (version, threads, create string)
+│   ├── reftype.rs      # Class signature, methods, fields
+│   └── thread.rs       # Thread name, frames, suspend
 ├── mcp-server/         # MCP server
 │   ├── main.rs         # Stdio transport
 │   ├── protocol.rs     # MCP JSON-RPC
-│   ├── handlers.rs     # Request routing
-│   ├── tools.rs        # Tool definitions
+│   ├── handlers.rs     # Request routing + expression evaluation
+│   ├── tools.rs        # Tool definitions (19 tools)
 │   └── session.rs      # Debug session state
-└── examples/           # Usage examples
+└── examples/           # Integration test examples (require live JVM)
 ```
 
-### Testing
+### Building & Testing
 
-Use the companion [java-example-for-k8s](../java-example-for-k8s) as a test target:
+```bash
+cargo build --release   # Release build
+cargo test              # Run unit tests (~50 tests)
+```
+
+Unit tests cover protocol constants, packet construction, value formatting,
+handler helpers, tool schemas, and session types. No JVM required.
+
+#### Integration Testing
+
+For end-to-end testing against a live JVM, use the companion
+[java-example-for-k8s](../java-example-for-k8s):
 
 ```bash
 cd ../java-example-for-k8s
@@ -149,20 +169,7 @@ java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005 \
   -jar target/probe-demo-0.0.1-SNAPSHOT.jar
 ```
 
-Then test MCP tools against this running app.
-
-### Building
-
-```bash
-# Debug build
-cargo build
-
-# Release build
-cargo build --release
-
-# Run tests
-cargo test
-```
+Then run the examples in `examples/` against the running app.
 
 ## Status
 
@@ -171,7 +178,7 @@ cargo test
 ### Implemented Features
 - [x] Project structure
 - [x] JDWP protocol (handshake, packets, encoding/decoding)
-- [x] MCP server with 18 debug tools
+- [x] MCP server with 19 debug tools
 - [x] VirtualMachine commands (Version, IDSizes, AllThreads, Suspend/Resume)
 - [x] ClassesBySignature (find classes by name)
 - [x] ReferenceType.Methods (get method info)
@@ -194,9 +201,12 @@ cargo test
 - [x] Chained expression evaluation (`a.b().c()`)
 - [x] Superclass hierarchy walking for methods and fields
 - [x] Auto-stringify object values via `toString()`
-- [x] Exception breakpoints
-- [x] Conditional breakpoints
-- [x] Watch expressions
+- [x] Exception breakpoints with package filter
+- [x] Conditional breakpoints with skip count
+- [x] Watch expressions (on steps or breakpoints only)
+- [x] Variable modification (`debug.set_value`)
+- [x] Collection/array element enumeration (`format_mode: "elements"`)
+- [x] Unit test suite (~50 tests)
 
 ## References
 
