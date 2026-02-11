@@ -19,6 +19,32 @@ pub struct VariableSlot {
 
 impl JdwpConnection {
     /// Get values for variable slots in a frame (StackFrame.GetValues command)
+    /// Set values for variable slots in a frame (StackFrame.SetValues command)
+    pub async fn set_frame_values(
+        &mut self,
+        thread_id: ThreadId,
+        frame_id: FrameId,
+        slot_values: Vec<(i32, Value)>,
+    ) -> JdwpResult<()> {
+        let id = self.next_id();
+        let mut packet = CommandPacket::new(id, command_sets::STACK_FRAME, stack_frame_commands::SET_VALUES);
+
+        packet.data.put_u64(thread_id);
+        packet.data.put_u64(frame_id);
+        packet.data.put_i32(slot_values.len() as i32);
+
+        for (slot, value) in &slot_values {
+            packet.data.put_i32(*slot);
+            crate::object::write_value_data(&mut packet.data, value);
+        }
+
+        let reply = self.send_command(packet).await?;
+        reply.check_error()?;
+
+        Ok(())
+    }
+
+    /// Get values for variable slots in a frame (StackFrame.GetValues command)
     pub async fn get_frame_values(
         &mut self,
         thread_id: ThreadId,

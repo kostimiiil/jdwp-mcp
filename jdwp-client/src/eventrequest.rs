@@ -101,6 +101,54 @@ impl JdwpConnection {
         Ok(request_id)
     }
 
+    /// Set an exception breakpoint (EventRequest.Set with EXCEPTION kind)
+    /// Returns the request ID for this exception request
+    ///
+    /// # Arguments
+    /// * `exception_class_id` - ReferenceTypeId of the exception class (0 = all exceptions)
+    /// * `caught` - Break on caught exceptions
+    /// * `uncaught` - Break on uncaught exceptions
+    /// * `suspend_policy` - How to suspend threads when exception occurs
+    pub async fn set_exception_breakpoint(
+        &mut self,
+        exception_class_id: ReferenceTypeId,
+        caught: bool,
+        uncaught: bool,
+        suspend_policy: SuspendPolicy,
+    ) -> JdwpResult<i32> {
+        let id = self.next_id();
+        let mut packet = CommandPacket::new(id, command_sets::EVENT_REQUEST, event_commands::SET);
+
+        // Event kind: EXCEPTION (4)
+        packet.data.put_u8(event_kinds::EXCEPTION);
+
+        // Suspend policy
+        packet.data.put_u8(suspend_policy as u8);
+
+        // Number of modifiers (1 - ExceptionOnly)
+        packet.data.put_i32(1);
+
+        // Modifier kind: ExceptionOnly (8)
+        packet.data.put_u8(8);
+
+        // Exception class reference type (0 means all exceptions)
+        packet.data.put_u64(exception_class_id);
+
+        // Caught
+        packet.data.put_u8(if caught { 1 } else { 0 });
+
+        // Uncaught
+        packet.data.put_u8(if uncaught { 1 } else { 0 });
+
+        let reply = self.send_command(packet).await?;
+        reply.check_error()?;
+
+        let mut data = reply.data();
+        let request_id = read_i32(&mut data)?;
+
+        Ok(request_id)
+    }
+
     /// Clear an event request by kind and request ID (EventRequest.Clear command)
     pub async fn clear_event_request(&mut self, event_kind: u8, request_id: i32) -> JdwpResult<()> {
         let id = self.next_id();

@@ -91,6 +91,24 @@ impl JdwpConnection {
         })
     }
 
+    /// Create a string object in the target VM (VirtualMachine.CreateString command)
+    pub async fn create_string(&mut self, value: &str) -> JdwpResult<crate::types::ObjectId> {
+        let id = self.next_id();
+        let mut packet = CommandPacket::new(id, command_sets::VIRTUAL_MACHINE, vm_commands::CREATE_STRING);
+
+        let bytes = value.as_bytes();
+        packet.data.put_u32(bytes.len() as u32);
+        packet.data.extend_from_slice(bytes);
+
+        let reply = self.send_command(packet).await?;
+        reply.check_error()?;
+
+        let mut data = reply.data();
+        let string_id = crate::reader::read_u64(&mut data)?;
+
+        Ok(string_id)
+    }
+
     /// Find classes by signature (VirtualMachine.ClassesBySignature command)
     /// Signature format: "Lcom/example/MyClass;" for classes
     pub async fn classes_by_signature(&mut self, signature: &str) -> JdwpResult<Vec<ClassInfo>> {

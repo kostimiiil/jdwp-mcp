@@ -19,6 +19,8 @@ pub struct DebugSession {
     pub last_event: Option<EventSet>,
     pub step_event_tx: Option<mpsc::Sender<EventSet>>,
     pub event_listener_task: Option<JoinHandle<()>>,
+    pub watch_expressions: Vec<WatchExpression>,
+    pub last_watch_results: Option<Vec<(String, String)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +32,22 @@ pub struct BreakpointInfo {
     pub method: Option<String>,
     pub enabled: bool,
     pub hit_count: u32,
+    pub exception_class: Option<String>,
+    pub condition: Option<String>,
+    pub skip_count: u32,
+    pub package_filter: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WatchExpression {
+    pub expression: String,
+    pub evaluate_on: WatchMode,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WatchMode {
+    Steps,
+    BreakpointsOnly,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +81,8 @@ impl SessionManager {
             last_event: None,
             step_event_tx: None,
             event_listener_task: None,
+            watch_expressions: Vec::new(),
+            last_watch_results: None,
         };
 
         let mut sessions = self.sessions.lock().await;
@@ -108,6 +128,53 @@ impl SessionManager {
         if current.as_ref() == Some(&session_id.to_string()) {
             *current = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_mode_inequality() {
+        assert_ne!(WatchMode::Steps, WatchMode::BreakpointsOnly);
+    }
+
+    #[test]
+    fn watch_mode_equality() {
+        assert_eq!(WatchMode::Steps, WatchMode::Steps);
+        assert_eq!(WatchMode::BreakpointsOnly, WatchMode::BreakpointsOnly);
+    }
+
+    #[test]
+    fn watch_expression_clone() {
+        let original = WatchExpression {
+            expression: "myVar.size()".to_string(),
+            evaluate_on: WatchMode::Steps,
+        };
+        let cloned = original.clone();
+        assert_eq!(cloned.expression, "myVar.size()");
+        assert_eq!(cloned.evaluate_on, WatchMode::Steps);
+    }
+
+    #[test]
+    fn breakpoint_info_new_fields() {
+        let bp = BreakpointInfo {
+            id: "bp_1".to_string(),
+            request_id: 42,
+            class_pattern: "com.example.Foo".to_string(),
+            line: 10,
+            method: Some("bar".to_string()),
+            enabled: true,
+            hit_count: 0,
+            exception_class: None,
+            condition: Some("x > 5".to_string()),
+            skip_count: 3,
+            package_filter: Some("com.example".to_string()),
+        };
+        assert_eq!(bp.skip_count, 3);
+        assert_eq!(bp.package_filter.as_deref(), Some("com.example"));
+        assert_eq!(bp.condition.as_deref(), Some("x > 5"));
     }
 }
 

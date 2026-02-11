@@ -134,3 +134,80 @@ pub struct FrameInfo {
     pub frame_id: FrameId,
     pub location: Location,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_byte() {
+        let v = Value { tag: 66, data: ValueData::Byte(42) };
+        assert_eq!(v.format(), "(byte) 42");
+    }
+
+    #[test]
+    fn format_char() {
+        let v = Value { tag: 67, data: ValueData::Char(65) };
+        assert_eq!(v.format(), "(char) 'A'");
+    }
+
+    #[test]
+    fn format_float() {
+        let v = Value { tag: 70, data: ValueData::Float(1.5) };
+        assert_eq!(v.format(), "(float) 1.5");
+    }
+
+    #[test]
+    fn format_double() {
+        let v = Value { tag: 68, data: ValueData::Double(2.5) };
+        assert_eq!(v.format(), "(double) 2.5");
+    }
+
+    #[test]
+    fn format_int() {
+        let v = Value { tag: 73, data: ValueData::Int(100) };
+        assert_eq!(v.format(), "(int) 100");
+    }
+
+    #[test]
+    fn format_long() {
+        let v = Value { tag: 74, data: ValueData::Long(9999999999) };
+        assert_eq!(v.format(), "(long) 9999999999");
+    }
+
+    #[test]
+    fn format_short() {
+        let v = Value { tag: 83, data: ValueData::Short(256) };
+        assert_eq!(v.format(), "(short) 256");
+    }
+
+    #[test]
+    fn format_boolean_true() {
+        let v = Value { tag: 90, data: ValueData::Boolean(true) };
+        assert_eq!(v.format(), "(boolean) true");
+    }
+
+    #[test]
+    fn format_boolean_false() {
+        let v = Value { tag: 90, data: ValueData::Boolean(false) };
+        assert_eq!(v.format(), "(boolean) false");
+    }
+
+    #[test]
+    fn format_object_null() {
+        let v = Value { tag: 76, data: ValueData::Object(0) };
+        assert_eq!(v.format(), "(object) null");
+    }
+
+    #[test]
+    fn format_object_non_null() {
+        let v = Value { tag: 76, data: ValueData::Object(0xff) };
+        assert_eq!(v.format(), "(object) @ff");
+    }
+
+    #[test]
+    fn format_void() {
+        let v = Value { tag: 86, data: ValueData::Void };
+        assert_eq!(v.format(), "(void)");
+    }
+}

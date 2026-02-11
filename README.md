@@ -13,9 +13,12 @@ natural language.
 - **Breakpoint Management**: Set, list, and clear breakpoints by class and line
 - **Stack Inspection**: Get summarized stack frames with local variables
 - **Execution Control**: Step over/into/out, continue, pause
-- **Expression Evaluation**: Evaluate Java expressions in frame context
+- **Expression Evaluation**: Chained expressions like `obj.getList().size()` with superclass hierarchy walking
+- **Exception Breakpoints**: Break on thrown exceptions by class or catch all
+- **Conditional Breakpoints**: Only break when an expression evaluates to truthy
+- **Watch Expressions**: Track expressions across steps
 - **Thread Management**: List and control thread execution
-- **Smart Summarization**: Handles large data structures without overwhelming the LLM
+- **Smart Summarization**: Auto-stringifies objects via `toString()`, shows readable values everywhere
 
 ## Quick Start
 
@@ -67,17 +70,22 @@ Adjust the path to match where you cloned this repository. The `--scope project`
 | Tool | Description |
 |------|-------------|
 | `debug.attach` | Connect to JVM via JDWP |
-| `debug.set_breakpoint` | Set breakpoint at class:line |
+| `debug.set_breakpoint` | Set breakpoint at class:line (optional `condition`) |
+| `debug.set_exception_breakpoint` | Break on exceptions (`"*"` for all, or specific class) |
 | `debug.list_breakpoints` | List active breakpoints |
 | `debug.clear_breakpoint` | Remove a breakpoint |
 | `debug.continue` | Resume execution |
 | `debug.step_over` | Step over current line |
 | `debug.step_into` | Step into method |
 | `debug.step_out` | Step out of method |
-| `debug.get_stack` | Get stack frames with variables |
-| `debug.evaluate` | Evaluate expression |
+| `debug.get_stack` | Get stack frames with auto-stringified variables |
+| `debug.evaluate` | Evaluate chained expressions (e.g. `obj.getList().size()`) |
+| `debug.add_watch` | Add a watch expression evaluated on each step |
+| `debug.remove_watch` | Remove a watch expression |
+| `debug.list_watches` | List all watch expressions |
 | `debug.list_threads` | List all threads |
 | `debug.pause` | Pause execution |
+| `debug.get_last_event` | Get last event (breakpoint, step, exception) |
 | `debug.disconnect` | End debug session |
 
 ## Example: Debugging with kubectl port-forward
@@ -163,7 +171,7 @@ cargo test
 ### Implemented Features
 - [x] Project structure
 - [x] JDWP protocol (handshake, packets, encoding/decoding)
-- [x] MCP server skeleton with 13 debug tools
+- [x] MCP server with 18 debug tools
 - [x] VirtualMachine commands (Version, IDSizes, AllThreads, Suspend/Resume)
 - [x] ClassesBySignature (find classes by name)
 - [x] ReferenceType.Methods (get method info)
@@ -182,12 +190,13 @@ cargo test
 - [x] `test_breakpoint` - Set breakpoints at specific source lines
 - [x] `test_manual_stack` - Suspend and inspect thread stacks with variables
 
-### Next Steps
-- [ ] Event loop for async breakpoint notifications
-- [ ] Stepping commands (step over/into/out)
-- [ ] Expression evaluation
-- [ ] String and object dereferencing
-- [ ] Full MCP server integration
+### Recent Additions
+- [x] Chained expression evaluation (`a.b().c()`)
+- [x] Superclass hierarchy walking for methods and fields
+- [x] Auto-stringify object values via `toString()`
+- [x] Exception breakpoints
+- [x] Conditional breakpoints
+- [x] Watch expressions
 
 ## References
 

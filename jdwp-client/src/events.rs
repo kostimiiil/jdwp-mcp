@@ -138,6 +138,20 @@ pub fn parse_event_packet(data: &[u8]) -> JdwpResult<EventSet> {
                 let thread = read_u64(&mut buf)?;
                 EventKind::ThreadDeath { thread }
             }
+            event_kinds::EXCEPTION => {
+                let thread = read_u64(&mut buf)?;
+                let location = read_location(&mut buf)?;
+                let _exception_tag = read_u8(&mut buf)?; // tagged-objectID: tag byte
+                let exception = read_u64(&mut buf)?;     // + objectID
+                let catch_location = read_location(&mut buf)?;
+                // catch_location with type_tag==0 means uncaught
+                let catch_loc = if catch_location.type_tag == 0 {
+                    None
+                } else {
+                    Some(catch_location)
+                };
+                EventKind::Exception { thread, location, exception, catch_location: catch_loc }
+            }
             event_kinds::CLASS_PREPARE => {
                 let thread = read_u64(&mut buf)?;
                 let _ref_type_tag = read_u8(&mut buf)?;

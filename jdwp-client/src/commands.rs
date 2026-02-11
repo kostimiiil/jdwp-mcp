@@ -112,6 +112,12 @@ pub mod object_reference_commands {
     pub const IS_COLLECTED: u8 = 9;
 }
 
+// ArrayReference commands (set 13)
+pub mod array_reference_commands {
+    pub const LENGTH: u8 = 1;
+    pub const GET_VALUES: u8 = 2;
+}
+
 // StackFrame commands (set 16)
 pub mod stack_frame_commands {
     pub const GET_VALUES: u8 = 1;
@@ -165,4 +171,30 @@ pub mod step_depths {
     pub const INTO: i32 = 0;
     pub const OVER: i32 = 1;
     pub const OUT: i32 = 2;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array_reference_command_constants() {
+        assert_eq!(array_reference_commands::LENGTH, 1);
+        assert_eq!(array_reference_commands::GET_VALUES, 2);
+    }
+
+    #[test]
+    fn command_set_array_reference() {
+        assert_eq!(command_sets::ARRAY_REFERENCE, 13);
+    }
+
+    #[test]
+    fn stack_frame_set_values() {
+        assert_eq!(stack_frame_commands::SET_VALUES, 2);
+    }
+
+    #[test]
+    fn vm_create_string() {
+        assert_eq!(vm_commands::CREATE_STRING, 11);
+    }
 }

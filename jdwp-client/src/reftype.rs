@@ -2,7 +2,7 @@
 //
 // Commands for working with classes, interfaces, and arrays
 
-use crate::commands::{command_sets, reference_type_commands};
+use crate::commands::{command_sets, class_type_commands, reference_type_commands};
 use crate::connection::JdwpConnection;
 use crate::protocol::{CommandPacket, JdwpResult};
 use crate::reader::{read_i32, read_string, read_u64};
@@ -78,6 +78,23 @@ impl JdwpConnection {
         }
 
         Ok(methods)
+    }
+
+    /// Get the superclass of a class (ClassType.Superclass command)
+    /// Returns 0 when the class is java.lang.Object (no parent)
+    pub async fn get_superclass(&mut self, class_id: ReferenceTypeId) -> JdwpResult<ReferenceTypeId> {
+        let id = self.next_id();
+        let mut packet = CommandPacket::new(id, command_sets::CLASS_TYPE, class_type_commands::SUPERCLASS);
+
+        packet.data.put_u64(class_id);
+
+        let reply = self.send_command(packet).await?;
+        reply.check_error()?;
+
+        let mut data = reply.data();
+        let superclass_id = read_u64(&mut data)?;
+
+        Ok(superclass_id)
     }
 
     /// Get fields for a reference type (ReferenceType.Fields command)
