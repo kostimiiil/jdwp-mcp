@@ -20,6 +20,40 @@ natural language.
 - **Thread Management**: List and control thread execution
 - **Smart Summarization**: Auto-stringifies objects via `toString()`, shows readable values everywhere
 
+## Installation
+
+### From GitHub Releases (recommended)
+
+Download a prebuilt binary from the [latest release](https://github.com/kostimiiil/jdwp-mcp/releases/latest):
+
+```bash
+# macOS Apple Silicon (M1/M2/M3/M4)
+curl -L https://github.com/kostimiiil/jdwp-mcp/releases/latest/download/jdwp-mcp-macos-aarch64.tar.gz | tar xz
+
+# macOS Intel
+curl -L https://github.com/kostimiiil/jdwp-mcp/releases/latest/download/jdwp-mcp-macos-x86_64.tar.gz | tar xz
+
+# Linux x86_64
+curl -L https://github.com/kostimiiil/jdwp-mcp/releases/latest/download/jdwp-mcp-linux-x86_64.tar.gz | tar xz
+```
+
+Then move the binary somewhere on your PATH:
+
+```bash
+sudo mv jdwp-mcp /usr/local/bin/
+```
+
+### From Source
+
+Requires [Rust](https://rustup.rs/):
+
+```bash
+git clone https://github.com/kostimiiil/jdwp-mcp.git
+cd jdwp-mcp
+cargo build --release
+# Binary is at target/release/jdwp-mcp
+```
+
 ## Quick Start
 
 ### 1. Start your Java app with JDWP enabled
@@ -28,22 +62,18 @@ natural language.
 java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005 -jar myapp.jar
 ```
 
-### 2. Build the MCP server
-
-```bash
-cargo build --release
-```
-
-### 3. Configure Claude Code
+### 2. Configure Claude Code
 
 The easiest way to enable the MCP server for your project:
 
 ```bash
 # From your Java project directory
-claude mcp add --scope project jdwp /path/to/jdwp-mcp/target/release/jdwp-mcp
+claude mcp add --scope project jdwp jdwp-mcp
 ```
 
-Adjust the path to match where you cloned this repository. The `--scope project` flag makes the debugger available only in your current Java project.
+If `jdwp-mcp` is not on your PATH, use the full path to the binary instead.
+
+The `--scope project` flag makes the debugger available only in your current Java project.
 
 **Alternative**: Manual configuration via `.mcp.json`:
 
@@ -51,7 +81,7 @@ Adjust the path to match where you cloned this repository. The `--scope project`
 {
   "mcpServers": {
     "jdwp": {
-      "command": "/path/to/jdwp-mcp/target/release/jdwp-mcp"
+      "command": "jdwp-mcp"
     }
   }
 }
