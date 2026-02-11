@@ -152,6 +152,14 @@ pub mod step_sizes {
     pub const LINE: i32 = 1;
 }
 
+// ClassType commands (set 3)
+pub mod class_type_commands {
+    pub const SUPERCLASS: u8 = 1;
+    pub const SET_VALUES: u8 = 2;
+    pub const INVOKE_METHOD: u8 = 3;
+    pub const NEW_INSTANCE: u8 = 4;
+}
+
 // Step depths
 pub mod step_depths {
     pub const INTO: i32 = 0;

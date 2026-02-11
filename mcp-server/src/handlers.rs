@@ -3,7 +3,7 @@
 // Handles initialize, list tools, and debug tool execution
 
 use crate::protocol::*;
-use crate::session::SessionManager;
+use crate::session::{DebugSession, SessionManager};
 use crate::tools;
 use serde_json::json;
 use tracing::{debug, info, warn};
@@ -172,6 +172,15 @@ impl RequestHandler {
                             if let Some(event_set) = event_opt {
                                 if let Some(session_guard) = session_manager.get_current_session().await {
                                     let mut session = session_guard.lock().await;
+                                    // Route step events to the step channel if present
+                                    let is_step = event_set.events.iter().any(|e|
+                                        matches!(e.details, jdwp_client::events::EventKind::Step { .. })
+                                    );
+                                    if is_step {
+                                        if let Some(tx) = &session.step_event_tx {
+                                            let _ = tx.try_send(event_set.clone());
+                                        }
+                                    }
                                     session.last_event = Some(event_set);
                                 } else {
                                     break; // Session gone
@@ -361,19 +370,86 @@ impl RequestHandler {
         Ok("▶️  Execution resumed".to_string())
     }
 
-    async fn handle_step_over(&self, _args: serde_json::Value) -> Result<String, String> {
-        // TODO: Implement step over
-        Ok("Step over not yet implemented".to_string())
+    async fn handle_step_over(&self, args: serde_json::Value) -> Result<String, String> {
+        self.execute_step(args, jdwp_client::commands::step_depths::OVER).await
     }
 
-    async fn handle_step_into(&self, _args: serde_json::Value) -> Result<String, String> {
-        // TODO: Implement step into
-        Ok("Step into not yet implemented".to_string())
+    async fn handle_step_into(&self, args: serde_json::Value) -> Result<String, String> {
+        self.execute_step(args, jdwp_client::commands::step_depths::INTO).await
     }
 
-    async fn handle_step_out(&self, _args: serde_json::Value) -> Result<String, String> {
-        // TODO: Implement step out
-        Ok("Step out not yet implemented".to_string())
+    async fn handle_step_out(&self, args: serde_json::Value) -> Result<String, String> {
+        self.execute_step(args, jdwp_client::commands::step_depths::OUT).await
+    }
+
+    async fn execute_step(&self, args: serde_json::Value, step_depth: i32) -> Result<String, String> {
+        let thread_id = parse_thread_id(&args)?;
+
+        let session_guard = self.session_manager.get_current_session().await
+            .ok_or_else(|| "No active debug session".to_string())?;
+
+        // Create channel for step event
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<jdwp_client::EventSet>(1);
+
+        // Set up step request
+        let request_id = {
+            let mut session = session_guard.lock().await;
+            session.step_event_tx = Some(tx);
+            session.connection.set_step_request(
+                thread_id,
+                jdwp_client::commands::step_sizes::LINE,
+                step_depth,
+                jdwp_client::SuspendPolicy::All,
+            ).await.map_err(|e| format!("Failed to set step request: {}", e))?
+        };
+
+        // Resume execution
+        {
+            let mut session = session_guard.lock().await;
+            session.connection.resume_all().await
+                .map_err(|e| format!("Failed to resume: {}", e))?;
+        }
+
+        // Wait for step event with timeout
+        let step_result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            rx.recv(),
+        ).await;
+
+        // Clean up: remove channel and clear step request
+        {
+            let mut session = session_guard.lock().await;
+            session.step_event_tx = None;
+            let _ = session.connection.clear_event_request(
+                jdwp_client::commands::event_kinds::SINGLE_STEP,
+                request_id,
+            ).await;
+        }
+
+        // Process result
+        match step_result {
+            Ok(Some(event_set)) => {
+                for event in &event_set.events {
+                    if let jdwp_client::events::EventKind::Step { thread, location } = &event.details {
+                        let mut session = session_guard.lock().await;
+                        let (class_name, method_name, line) = resolve_location(&mut session, location).await;
+                        let depth_name = match step_depth {
+                            0 => "into",
+                            1 => "over",
+                            2 => "out",
+                            _ => "step",
+                        };
+                        return Ok(format!(
+                            "Stepped {} to {}::{}() line {}\n  Thread: 0x{:x}",
+                            depth_name, class_name, method_name, line, thread
+                        ));
+                    }
+                }
+                Ok("Step completed (no location info)".to_string())
+            }
+            Ok(None) => Err("Step event channel closed unexpectedly".to_string()),
+            Err(_) => Err("Step timed out after 10 seconds".to_string()),
+        }
     }
 
     async fn handle_get_stack(&self, args: serde_json::Value) -> Result<String, String> {
@@ -484,9 +560,58 @@ impl RequestHandler {
         Ok(output)
     }
 
-    async fn handle_evaluate(&self, _args: serde_json::Value) -> Result<String, String> {
-        // TODO: Implement expression evaluation
-        Ok("Expression evaluation not yet implemented".to_string())
+    async fn handle_evaluate(&self, args: serde_json::Value) -> Result<String, String> {
+        let thread_id = parse_thread_id(&args)?;
+        let frame_index = args.get("frame_index")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let expression = args.get("expression")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'expression' parameter".to_string())?
+            .to_string();
+        let max_result_length = args.get("max_result_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1000) as usize;
+
+        let session_guard = self.session_manager.get_current_session().await
+            .ok_or_else(|| "No active debug session".to_string())?;
+
+        let mut session = session_guard.lock().await;
+
+        // Get the frame
+        let frames = session.connection.get_frames(thread_id, frame_index, 1).await
+            .map_err(|e| format!("Failed to get frames: {}", e))?;
+        let frame = frames.first()
+            .ok_or_else(|| "No frame at specified index".to_string())?
+            .clone();
+
+        // Parse expression: "varName" or "varName.member" or "varName.method()"
+        let parts: Vec<&str> = expression.splitn(2, '.').collect();
+        let var_name = parts[0];
+
+        // Resolve the base variable
+        let base_value = resolve_local_variable(&mut session, thread_id, &frame, var_name).await?;
+
+        if parts.len() == 1 {
+            // Just a variable name
+            let formatted = format_value_deep(&mut session, &base_value, max_result_length).await;
+            return Ok(formatted);
+        }
+
+        let member = parts[1];
+
+        if member.ends_with("()") {
+            // Method invocation
+            let method_name = &member[..member.len()-2];
+            let result = invoke_no_arg_method(&mut session, thread_id, &base_value, method_name).await?;
+            let formatted = format_value_deep(&mut session, &result, max_result_length).await;
+            Ok(formatted)
+        } else {
+            // Field access
+            let result = access_field(&mut session, &base_value, member).await?;
+            let formatted = format_value_deep(&mut session, &result, max_result_length).await;
+            Ok(formatted)
+        }
     }
 
     async fn handle_list_threads(&self, _args: serde_json::Value) -> Result<String, String> {
@@ -501,7 +626,11 @@ impl RequestHandler {
         let mut output = format!("🧵 {} thread(s):\n\n", threads.len());
 
         for (idx, thread_id) in threads.iter().enumerate() {
-            output.push_str(&format!("  Thread {} (ID: 0x{:x})\n", idx + 1, thread_id));
+            // Get thread name
+            let name = session.connection.get_thread_name(*thread_id).await
+                .unwrap_or_else(|_| "???".to_string());
+
+            output.push_str(&format!("  Thread {} \"{}\" (ID: 0x{:x})\n", idx + 1, name, thread_id));
 
             // Try to get frame count
             match session.connection.get_frames(*thread_id, 0, 1).await {
@@ -548,59 +677,257 @@ impl RequestHandler {
         let session_guard = self.session_manager.get_current_session().await
             .ok_or_else(|| "No active debug session".to_string())?;
 
-        let session = session_guard.lock().await;
+        let mut session = session_guard.lock().await;
 
-        if let Some(event_set) = &session.last_event {
-            let mut output = format!("🎯 Last event (suspend_policy={})\n\n", event_set.suspend_policy);
+        let event_set = match &session.last_event {
+            Some(es) => es.clone(),
+            None => return Ok("No events received yet. Set a breakpoint and trigger it.".to_string()),
+        };
 
-            for (idx, event) in event_set.events.iter().enumerate() {
-                output.push_str(&format!("Event {}:\n", idx + 1));
-                output.push_str(&format!("  Request ID: {}\n", event.request_id));
+        let mut output = format!("🎯 Last event (suspend_policy={})\n\n", event_set.suspend_policy);
 
-                match &event.details {
-                    jdwp_client::events::EventKind::Breakpoint { thread, location } => {
-                        output.push_str("  Type: Breakpoint\n");
-                        output.push_str(&format!("  ⚡ Thread ID: 0x{:x}\n", thread));
-                        output.push_str(&format!("  Location: class=0x{:x}, method=0x{:x}, index={}\n",
-                            location.class_id, location.method_id, location.index));
-                    }
-                    jdwp_client::events::EventKind::Step { thread, location } => {
-                        output.push_str("  Type: Step\n");
-                        output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
-                        output.push_str(&format!("  Location: class=0x{:x}, method=0x{:x}, index={}\n",
-                            location.class_id, location.method_id, location.index));
-                    }
-                    jdwp_client::events::EventKind::VMStart { thread } => {
-                        output.push_str("  Type: VM Start\n");
-                        output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
-                    }
-                    jdwp_client::events::EventKind::VMDeath => {
-                        output.push_str("  Type: VM Death\n");
-                    }
-                    jdwp_client::events::EventKind::ThreadStart { thread } => {
-                        output.push_str("  Type: Thread Start\n");
-                        output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
-                    }
-                    jdwp_client::events::EventKind::ThreadDeath { thread } => {
-                        output.push_str("  Type: Thread Death\n");
-                        output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
-                    }
-                    jdwp_client::events::EventKind::ClassPrepare { thread, ref_type, signature, .. } => {
-                        output.push_str("  Type: Class Prepare\n");
-                        output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
-                        output.push_str(&format!("  Class: {} (0x{:x})\n", signature, ref_type));
-                    }
-                    _ => {
-                        output.push_str("  Type: Other\n");
-                    }
+        for (idx, event) in event_set.events.iter().enumerate() {
+            output.push_str(&format!("Event {}:\n", idx + 1));
+            output.push_str(&format!("  Request ID: {}\n", event.request_id));
+
+            match &event.details {
+                jdwp_client::events::EventKind::Breakpoint { thread, location } => {
+                    let (class_name, method_name, line) = resolve_location(&mut session, location).await;
+                    output.push_str("  Type: Breakpoint\n");
+                    output.push_str(&format!("  ⚡ Thread ID: 0x{:x}\n", thread));
+                    output.push_str(&format!("  Location: {}::{}() line {}\n", class_name, method_name, line));
                 }
-
-                output.push_str("\n");
+                jdwp_client::events::EventKind::Step { thread, location } => {
+                    let (class_name, method_name, line) = resolve_location(&mut session, location).await;
+                    output.push_str("  Type: Step\n");
+                    output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
+                    output.push_str(&format!("  Location: {}::{}() line {}\n", class_name, method_name, line));
+                }
+                jdwp_client::events::EventKind::VMStart { thread } => {
+                    output.push_str("  Type: VM Start\n");
+                    output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
+                }
+                jdwp_client::events::EventKind::VMDeath => {
+                    output.push_str("  Type: VM Death\n");
+                }
+                jdwp_client::events::EventKind::ThreadStart { thread } => {
+                    output.push_str("  Type: Thread Start\n");
+                    output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
+                }
+                jdwp_client::events::EventKind::ThreadDeath { thread } => {
+                    output.push_str("  Type: Thread Death\n");
+                    output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
+                }
+                jdwp_client::events::EventKind::ClassPrepare { thread, ref_type, signature, .. } => {
+                    output.push_str("  Type: Class Prepare\n");
+                    output.push_str(&format!("  Thread ID: 0x{:x}\n", thread));
+                    output.push_str(&format!("  Class: {} (0x{:x})\n", signature, ref_type));
+                }
+                _ => {
+                    output.push_str("  Type: Other\n");
+                }
             }
 
-            Ok(output)
-        } else {
-            Ok("No events received yet. Set a breakpoint and trigger it.".to_string())
+            output.push_str("\n");
+        }
+
+        Ok(output)
+    }
+}
+
+// --- Helper functions ---
+
+/// Parse a hex thread ID from tool arguments
+fn parse_thread_id(args: &serde_json::Value) -> Result<u64, String> {
+    let thread_id_str = args.get("thread_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'thread_id' parameter".to_string())?;
+    u64::from_str_radix(thread_id_str.trim_start_matches("0x"), 16)
+        .map_err(|_| format!("Invalid thread_id: {}", thread_id_str))
+}
+
+/// Convert a JVM type signature to a human-readable class name
+/// e.g., "Lcom/example/Foo;" -> "com.example.Foo"
+fn jvm_signature_to_class_name(sig: &str) -> String {
+    if sig.starts_with('L') && sig.ends_with(';') {
+        sig[1..sig.len()-1].replace('/', ".")
+    } else {
+        sig.to_string()
+    }
+}
+
+/// Resolve a JDWP Location to human-readable (class_name, method_name, line_number)
+async fn resolve_location(
+    session: &mut DebugSession,
+    location: &jdwp_client::types::Location,
+) -> (String, String, i32) {
+    // Get class signature
+    let class_name = match session.connection.get_signature(location.class_id).await {
+        Ok(sig) => jvm_signature_to_class_name(&sig),
+        Err(_) => format!("0x{:x}", location.class_id),
+    };
+
+    // Get method name and line number
+    let (method_name, line) = match session.connection.get_methods(location.class_id).await {
+        Ok(methods) => {
+            if let Some(method) = methods.iter().find(|m| m.method_id == location.method_id) {
+                let line = match session.connection.get_line_table(location.class_id, location.method_id).await {
+                    Ok(line_table) => {
+                        line_table.lines.iter()
+                            .filter(|e| e.line_code_index <= location.index)
+                            .max_by_key(|e| e.line_code_index)
+                            .map(|e| e.line_number)
+                            .unwrap_or(-1)
+                    }
+                    Err(_) => -1,
+                };
+                (method.name.clone(), line)
+            } else {
+                (format!("0x{:x}", location.method_id), -1)
+            }
+        }
+        Err(_) => (format!("0x{:x}", location.method_id), -1),
+    };
+
+    (class_name, method_name, line)
+}
+
+/// Resolve a local variable by name from the current frame
+async fn resolve_local_variable(
+    session: &mut DebugSession,
+    thread_id: u64,
+    frame: &jdwp_client::thread::Frame,
+    var_name: &str,
+) -> Result<jdwp_client::types::Value, String> {
+    // Get variable table
+    let var_table = session.connection.get_variable_table(
+        frame.location.class_id, frame.location.method_id,
+    ).await.map_err(|e| format!("Failed to get variable table: {}", e))?;
+
+    // Find variable by name in scope
+    let current_index = frame.location.index;
+    let var = var_table.iter()
+        .find(|v| v.name == var_name && current_index >= v.code_index && current_index < v.code_index + v.length as u64)
+        .ok_or_else(|| format!("Variable '{}' not found in current scope", var_name))?;
+
+    // Get value
+    let slots = vec![jdwp_client::stackframe::VariableSlot {
+        slot: var.slot as i32,
+        sig_byte: var.signature.as_bytes()[0],
+    }];
+
+    let values = session.connection.get_frame_values(thread_id, frame.frame_id, slots).await
+        .map_err(|e| format!("Failed to get variable value: {}", e))?;
+
+    values.into_iter().next()
+        .ok_or_else(|| "No value returned for variable".to_string())
+}
+
+/// Invoke a no-arg method on an object value
+async fn invoke_no_arg_method(
+    session: &mut DebugSession,
+    thread_id: u64,
+    value: &jdwp_client::types::Value,
+    method_name: &str,
+) -> Result<jdwp_client::types::Value, String> {
+    let object_id = match &value.data {
+        jdwp_client::types::ValueData::Object(id) => {
+            if *id == 0 { return Err("Cannot invoke method on null".to_string()); }
+            *id
+        }
+        _ => return Err("Cannot invoke method on non-object value".to_string()),
+    };
+
+    // Get class
+    let class_id = session.connection.get_object_reference_type(object_id).await
+        .map_err(|e| format!("Failed to get object type: {}", e))?;
+
+    // Find method (no-arg: signature starts with "()")
+    let methods = session.connection.get_methods(class_id).await
+        .map_err(|e| format!("Failed to get methods: {}", e))?;
+
+    let method = methods.iter()
+        .find(|m| m.name == method_name && m.signature.starts_with("()"))
+        .ok_or_else(|| format!("No-arg method '{}' not found on object", method_name))?;
+
+    let method_id = method.method_id;
+
+    // Invoke
+    let (return_value, exception_id) = session.connection.invoke_object_method(
+        object_id,
+        thread_id,
+        class_id,
+        method_id,
+        vec![],
+        jdwp_client::object::invoke_options::INVOKE_SINGLE_THREADED,
+    ).await.map_err(|e| format!("Failed to invoke method: {}", e))?;
+
+    if exception_id != 0 {
+        return Err(format!("Method threw exception (object ID: 0x{:x})", exception_id));
+    }
+
+    Ok(return_value)
+}
+
+/// Access a field on an object value
+async fn access_field(
+    session: &mut DebugSession,
+    value: &jdwp_client::types::Value,
+    field_name: &str,
+) -> Result<jdwp_client::types::Value, String> {
+    let object_id = match &value.data {
+        jdwp_client::types::ValueData::Object(id) => {
+            if *id == 0 { return Err("Cannot access field on null".to_string()); }
+            *id
+        }
+        _ => return Err("Cannot access field on non-object value".to_string()),
+    };
+
+    // Get class
+    let class_id = session.connection.get_object_reference_type(object_id).await
+        .map_err(|e| format!("Failed to get object type: {}", e))?;
+
+    // Find field
+    let fields = session.connection.get_fields(class_id).await
+        .map_err(|e| format!("Failed to get fields: {}", e))?;
+
+    let field = fields.iter()
+        .find(|f| f.name == field_name)
+        .ok_or_else(|| format!("Field '{}' not found on object", field_name))?;
+
+    let field_id = field.field_id;
+
+    // Get value
+    let values = session.connection.get_object_values(object_id, vec![field_id]).await
+        .map_err(|e| format!("Failed to get field value: {}", e))?;
+
+    values.into_iter().next()
+        .ok_or_else(|| "No value returned for field".to_string())
+}
+
+/// Format a value with String dereferencing and truncation
+async fn format_value_deep(
+    session: &mut DebugSession,
+    value: &jdwp_client::types::Value,
+    max_len: usize,
+) -> String {
+    // For string objects, dereference to show actual string
+    if value.tag == 115 { // 's' = string
+        if let jdwp_client::types::ValueData::Object(object_id) = &value.data {
+            if *object_id == 0 {
+                return "(String) null".to_string();
+            }
+            if let Ok(s) = session.connection.get_string_value(*object_id).await {
+                let display = if s.len() > max_len {
+                    format!("\"{}...\" (truncated)", &s[..max_len])
+                } else {
+                    format!("\"{}\"", s)
+                };
+                return format!("(String) {}", display);
+            }
         }
     }
+
+    // For other values, use the standard format
+    value.format()
 }

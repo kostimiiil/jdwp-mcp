@@ -4,7 +4,7 @@
 
 use crate::commands::event_kinds;
 use crate::protocol::{JdwpError, JdwpResult};
-use crate::reader::{read_i32, read_u64, read_u8};
+use crate::reader::{read_i32, read_string, read_u64, read_u8};
 use crate::types::*;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -137,6 +137,14 @@ pub fn parse_event_packet(data: &[u8]) -> JdwpResult<EventSet> {
             event_kinds::THREAD_DEATH => {
                 let thread = read_u64(&mut buf)?;
                 EventKind::ThreadDeath { thread }
+            }
+            event_kinds::CLASS_PREPARE => {
+                let thread = read_u64(&mut buf)?;
+                let _ref_type_tag = read_u8(&mut buf)?;
+                let ref_type = read_u64(&mut buf)?;
+                let signature = read_string(&mut buf)?;
+                let status = read_i32(&mut buf)?;
+                EventKind::ClassPrepare { thread, ref_type, signature, status }
             }
             _ => {
                 warn!("Unsupported event kind: {}", kind);

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio::sync::mpsc;
 
 pub type SessionId = String;
 
@@ -16,6 +17,7 @@ pub struct DebugSession {
     pub breakpoints: HashMap<String, BreakpointInfo>,
     pub threads: HashMap<String, ThreadInfo>,
     pub last_event: Option<EventSet>,
+    pub step_event_tx: Option<mpsc::Sender<EventSet>>,
     pub event_listener_task: Option<JoinHandle<()>>,
 }
 
@@ -59,6 +61,7 @@ impl SessionManager {
             breakpoints: HashMap::new(),
             threads: HashMap::new(),
             last_event: None,
+            step_event_tx: None,
             event_listener_task: None,
         };
 

@@ -29,6 +29,23 @@ pub struct FieldInfo {
 }
 
 impl JdwpConnection {
+    /// Get signature for a reference type (ReferenceType.Signature command)
+    /// Returns the JVM type signature (e.g., "Lcom/example/MyClass;")
+    pub async fn get_signature(&mut self, ref_type_id: ReferenceTypeId) -> JdwpResult<String> {
+        let id = self.next_id();
+        let mut packet = CommandPacket::new(id, command_sets::REFERENCE_TYPE, reference_type_commands::SIGNATURE);
+
+        packet.data.put_u64(ref_type_id);
+
+        let reply = self.send_command(packet).await?;
+        reply.check_error()?;
+
+        let mut data = reply.data();
+        let signature = read_string(&mut data)?;
+
+        Ok(signature)
+    }
+
     /// Get methods for a reference type (ReferenceType.Methods command)
     pub async fn get_methods(&mut self, ref_type_id: ReferenceTypeId) -> JdwpResult<Vec<MethodInfo>> {
         let id = self.next_id();
